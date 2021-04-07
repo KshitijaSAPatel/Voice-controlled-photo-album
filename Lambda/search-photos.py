@@ -6,7 +6,10 @@ import time
 import os
 import logging
 import boto3
-from botocore.vendored import requests
+import requests
+import urllib.parse
+from requests_aws4auth import AWS4Auth
+from elasticsearch import Elasticsearch, RequestsHttpConnection
     
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
@@ -20,7 +23,7 @@ def lambda_handler(event, context):
 
     print ('event : ', event)
 
-    q1 = event['q']
+    q1 = event["queryStringParameters"]['q']
     
     # if(q1 == "searchAudio" ):
     #     q1 = convert_speechtotext()
@@ -28,23 +31,26 @@ def lambda_handler(event, context):
     print("q1:", q1 )
     labels = get_labels(q1)
     print("labels", labels)
-    return
-    if len(labels) == 0:
-        return
-    else:
+    if len(labels) != 0:
         img_paths = get_photo_path(labels)
 
-    return {
-        'statusCode':200,
-        'body': {
-            'imagePaths':img_paths,
-            'userQuery':q1,
-            'labels': labels,
-        },
-        'headers':{
-            'Access-Control-Allow-Origin': '*'
+    if not img_paths:
+        return{
+            'statusCode':200,
+            "headers": {"Access-Control-Allow-Origin":"*"},
+            'body': json.dumps('No Results found')
         }
-    }
+    else:    
+        return{
+            'statusCode': 200,
+            'headers': {"Access-Control-Allow-Origin":"*"},
+            'body': {
+                'imagePaths':img_paths,
+                'userQuery':q1,
+                'labels': labels,
+            },
+            'isBase64Encoded': False
+        }
     
 def get_labels(query):
     response = lex.post_text(
@@ -66,30 +72,36 @@ def get_labels(query):
                 labels.append(value)
     return labels
 
-def get_photo_path(labels):
-    img_paths = []
-    unique_labels = [] 
-    for x in labels: 
-        if x not in unique_labels: 
-            unique_labels.append(x)
-    labels = unique_labels
-    print("inside get photo path", labels)
-    for i in labels:
-        path = host + '/_search?q=labels:'+i
-        print(path)
-        response = requests.get(path, headers=headers)
-        print("response from ES", response)
-        dict1 =  json.loads(response.text)
-        hits_count = dict1['hits']['total']['value']
-        print ("DICT : ", dict1)
-        for k in range(0, hits_count):
-            img_obj = dict1["hits"]["hits"]
-            img_bucket = dict1["hits"]["hits"][k]["_source"]["bucket"]
-            print("img_bucket", img_bucket)
-            img_name = dict1["hits"]["hits"][k]["_source"]["objectKey"]
-            print("img_name", img_name)
-            img_link = 'https://s3.amazonaws.com/' + str(img_bucket) + '/' + str(img_name)
-            print (img_link)
-            img_paths.append(img_link)
-    print (img_paths)
-    return img_paths
+    
+def get_photo_path(keys):
+    
+    # credentials = boto3.Session().get_credentials()
+    # awsauth = AWS4Auth(credentials.access_key, credentials.secret_key, region, 'es', session_token=credentials.token)
+    # es = Elasticsearch(
+    #     hosts = [{'host': host, 'port': 443}],
+    #     http_auth = awsauth,
+    #     use_ssl = True,
+    #     verify_certs = True,
+    #     connection_class = RequestsHttpConnection
+    # )
+    
+    es = Elasticsearch(
+        [host],
+        http_auth=("master", "Master123!"),
+    )
+    
+    resp = []
+    for key in keys:
+        if (key is not None) and key != '':
+            searchData = es.search({"query": {"match": {"labels": key}}})
+            resp.append(searchData)
+    print(resp)
+    output = []
+    for r in resp:
+        if 'hits' in r:
+             for val in r['hits']['hits']:
+                key = val['_source']['objectKey']
+                if key not in output:
+                    output.append('YOUR-BUCKET-LINK/'+key)
+    print (output)
+    return output  
